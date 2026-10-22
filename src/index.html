@@ -136,6 +136,8 @@ button{cursor:pointer}
 .cal-day.done{background:var(--green);color:#fff;font-weight:800}
 .cal-day.today{outline:2px solid var(--green)}
 </style>
+<link rel="stylesheet" href="/ai.css">
+<script src="/mastery-core.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -12960,7 +12962,7 @@ window.__EMBEDDED_QUESTIONS__=[
 ];
 </script>
 <script>
-const APP_VERSION = "politics-0.3.0";
+const APP_VERSION = "politics-private-ai-0.8.0";
 const STORE_KEY = "politics_quiz_independent_v2_v0_1";
 const app = document.getElementById("app");
 const toastEl = document.getElementById("toast");
@@ -12993,7 +12995,7 @@ function loadState(){
   catch(e){return defaultState();}
 }
 let state = loadState();
-function save(){state.lastSavedAt=Date.now();localStorage.setItem(STORE_KEY, JSON.stringify(state));}
+function save(){state.lastSavedAt=Date.now();localStorage.setItem(STORE_KEY, JSON.stringify(state));window.dispatchEvent(new Event('quiz-state-saved'));}
 function toast(msg){
   toastEl.textContent=msg;toastEl.classList.add("show");
   setTimeout(()=>toastEl.classList.remove("show"),1600);
@@ -13008,8 +13010,8 @@ function nav(active){
 function shell(content, active="home", action=""){
   return `<div class="app-shell">
     <div class="topbar"><div class="toprow">
-      <div class="brand"><div class="logo">题</div><span>政治理解型刷题 <small style="font-size:12px;color:#7b8780;font-weight:600">v0.5</small></span></div>
-      ${action}
+      <div class="brand"><div class="logo">题</div><span>政治理解型刷题 <small style="font-size:12px;color:#7b8780;font-weight:600">私人版</small></span></div>
+      <div class="top-tools"><button class="top-action" onclick="QuizSpeech.openSettings()">朗读设置</button><button class="top-action" onclick="quizAI.openSettings()">⚙ 模型设置</button>${action}</div>
     </div></div>
     <main class="content">${content}</main>${nav(active)}
   </div>`;
@@ -13211,6 +13213,7 @@ function home(){
       </div>
     </section>
 
+    ${window.QuizMasteryUI ? QuizMasteryUI.overview() : ""}
     <div class="section-title"><h2>今日记忆任务</h2><span>优先处理到期内容</span></div>
     <div class="memory-card">
       <b style="font-size:18px">间隔复习队列</b>
@@ -13274,7 +13277,7 @@ function home(){
     <div class="section-title"><h2>数据安全</h2><span>换手机也能恢复</span></div>
     <div class="card">
       <b style="font-size:18px">学习记录备份</b>
-      <p class="mini">备份现在也包含每道题的记忆阶段、下次复习日期和遗忘重置次数。</p>
+      <p class="mini">备份包含学习记录、记忆曲线和手动保存的 AI 记忆解析，不包含 API Key。</p>
       <div class="backup-actions">
         <button class="primary" onclick="exportBackup()">导出备份</button>
         <button class="ghost" onclick="importBackup()">导入备份</button>
@@ -13286,8 +13289,14 @@ function home(){
   `,"home",installBtn);
 }
 function startPractice(mode,limit=null,chapter=null){
+  window.quizAI?.closeReview();
+  window.QuizSpeech?.leave();
   let ids=[];
-  if(mode==="chapter"){
+  if(mode==="selection"){
+    const selected=new Set(Array.isArray(limit)?limit:[]);
+    ids=questions.filter(q=>selected.has(q.id)).map(q=>q.id);
+    if(!ids.length){toast("当前没有可练习的题目");return;}
+  }else if(mode==="chapter"){
     ids=questions.filter(q=>q.chapter===chapter).map(q=>q.id);
     if(!ids.length){toast("本章暂时没有题目");return;}
   }else if(mode==="review"){
@@ -13319,6 +13328,8 @@ function startPractice(mode,limit=null,chapter=null){
   view="practice";renderPractice();
 }
 function go(v){
+  window.QuizSpeech?.leave();
+  window.quizAI?.closeReview();
   if(view==="practice"&&v!=="practice")stopStudySession();
   view=v;
   if(v==="home")home();
@@ -13361,6 +13372,7 @@ function completeLearning(q,m){
   m.todayPasses=2;
   m.learningDay=todayKey();
   m.cycleStart=now;
+  m.reviewPasses=[];m.evidenceComplete=true;
   m.stage=0;
   m.dueTs=addDaysFrom(now,REVIEW_DAYS[0]);
   m.lastDailyComplete=todayKey();
@@ -13373,6 +13385,7 @@ function resetToLearning(q,m){
   m.todayPasses=0;
   m.learningDay=todayKey();
   m.cycleStart=null;
+  m.reviewPasses=[];m.evidenceComplete=true;
   m.stage=0;
   m.dueTs=null;
   m.lapses=(m.lapses||0)+1;
@@ -13382,12 +13395,17 @@ function resetToLearning(q,m){
 }
 function advanceReview(q,m){
   const now=Date.now();
+  const proof=QuizMastery.evidence(m,state.history.slice(1),q.id);
+  const passedDay=REVIEW_DAYS[m.stage];
+  m.reviewPasses=[...proof.passes];
+  m.evidenceComplete=proof.known;
+  if(passedDay)m.reviewPasses.push({day:passedDay,ts:now,cycleStart:m.cycleStart});
   let next=m.stage+1;
   // 若复习明显逾期，跳过已经过去的检查点，找到下一个仍在未来的节点。
   while(next<REVIEW_DAYS.length && addDaysFrom(m.cycleStart,REVIEW_DAYS[next])<=now)next++;
   if(next>=REVIEW_DAYS.length){
     m.phase="mastered";m.stage=REVIEW_DAYS.length;m.dueTs=null;
-    practice.feedback="本轮长期记忆节点全部通过 ✓ 已完成 1·3·7·14·30·60 天复习。";
+    practice.feedback="本轮记忆周期已结束 ✓ 实际通过的节点已记录；逾期跳过的节点不计为通过。";
   }else{
     m.stage=next;
     m.dueTs=addDaysFrom(m.cycleStart,REVIEW_DAYS[next]);
@@ -13395,6 +13413,7 @@ function advanceReview(q,m){
   }
 }
 function recordAnswer(q,value,correct){
+  window.QuizSpeech?.stop();
   const dl=ensureDayData();dl.answers++;if(correct)dl.correct++;else dl.wrong++;
   state.stats.total++;
   if(correct)state.stats.correct++;
@@ -13478,6 +13497,8 @@ function submitFill(){
   renderPractice(true);
 }
 function nextQuestion(){
+  window.QuizSpeech?.leave();
+  window.quizAI?.closeReview();
   if(practice.pos<practice.queue.length-1){
     practice.pos++;practice.done=false;practice.correct=false;practice.currentAnswer="";
     renderPractice();window.scrollTo({top:0,behavior:"smooth"});
@@ -13488,6 +13509,8 @@ function nextQuestion(){
   }
 }
 function prevQuestion(){
+  window.QuizSpeech?.leave();
+  window.quizAI?.closeReview();
   if(practice.pos>0){
     practice.pos--;practice.done=false;practice.correct=false;practice.currentAnswer="";
     renderPractice();window.scrollTo({top:0,behavior:"smooth"});
@@ -13518,42 +13541,32 @@ function renderPractice(scrollToAnalysis=false){
     <button class="primary" style="width:100%;margin-top:12px" ${done?"disabled":""} onclick="submitMulti()">提交多选答案</button>`;
   }else{
     input=`<div class="fill-row">
-      <input id="fill" class="fill" placeholder="请输入答案" value="${practice.currentAnswer||""}" ${done?"disabled":""} oninput="practice.currentAnswer=this.value" onkeydown="if(event.key==='Enter')submitFill()">
+      <input id="fill" class="fill" placeholder="请输入答案" value="${window.AICore ? AICore.esc(practice.currentAnswer||'') : ''}" ${done?"disabled":""} oninput="practice.currentAnswer=this.value" onkeydown="if(event.key==='Enter')submitFill()">
       <button class="primary" ${done?"disabled":""} onclick="submitFill()">答题</button>
     </div>`;
   }
-  let answer="";
-  if(done){
-    answer=`<div id="analysisStart" class="answer-banner ${practice.correct?'good':'bad'}">
-      <b>${practice.correct?'✓ 回答正确':'✗ 回答错误'}</b><br>正确答案：<b>${answerText(q)}</b>
-    </div>
-    ${practice.feedback?`<div class="reinforce-note">${practice.feedback}</div>`:""}
-    <div class="analysis">
-      <h3>详细原理解析</h3>
-      <div class="analysis-block principle"><b>① 核心原理</b>${q.principle}</div>
-      <div class="analysis-block why"><b>② 为什么是这个答案</b>${q.why}</div>
-      <div class="analysis-block mistake"><b>③ 易错点</b>${q.mistake}</div>
-      <div class="analysis-block memory"><b>④ 快速记忆</b>${q.memory}</div>
-    </div>`;
-  }
+  const answer=done?`<div class="answer-brief ${practice.correct?'good':'bad'}" role="status">
+    <span><b>${practice.correct?'✓ 回答正确':'✗ 回答错误'}</b> ${window.QuizMasteryUI ? QuizMasteryUI.badge(q) : ""} · 正确答案：<b>${answerText(q)}</b></span>
+    <button class="analysis-trigger" onclick="quizAI.openReview()">查看解析${window.quizAI ? quizAI.savedCountLabel(q) : ''} ›</button>
+  </div>`:"";
   app.innerHTML=shell(`
+    ${window.QuizMasteryUI ? QuizMasteryUI.forecastWidget(true) : ""}
     <div class="card">
       <div class="qhead"><span>${q.chapter} · ${q.type==="choice"?"单选题":q.type==="multi"?"多选题":q.type==="truefalse"?"判断题":"填空题"}${practice.mode==="daily"?" · 今日新题":practice.mode==="review"?" · 到期复习":practice.mode==="learning"?" · 学习中":practice.mode==="chapter"?" · 本章练习":""}</span><span><span class="study-timer">⏱ <span id="qTimer">00:00</span></span> ${practice.pos+1}/${practice.queue.length}</span></div>
       <div class="progress" style="margin-bottom:15px"><div style="width:${progress}%"></div></div>
+      ${window.QuizSpeech ? QuizSpeech.controls() : ""}
       <h2 class="qtitle">${q.q}</h2>
       ${input}
-      ${answer}
-      <div class="qactions">
+      <div class="qactions question-navigation" aria-label="题目切换">
         <button class="ghost" onclick="prevQuestion()" ${practice.pos===0?"disabled":""}>上一题</button>
         <button class="${done?'primary':'ghost'}" onclick="nextQuestion()" ${practice.pos===practice.queue.length-1&&!done?"disabled":""}>${done?"我懂了，下一题":"下一题"}</button>
       </div>
+      ${answer}
     </div>
   `,"practice");
   if(!studySessionStartedAt)startStudySession();
   const te=document.getElementById("qTimer");if(te)te.textContent=fmtSec(currentSessionSeconds());
-  if(scrollToAnalysis){
-    setTimeout(()=>document.getElementById("analysisStart")?.scrollIntoView({behavior:"smooth",block:"start"}),80);
-  }
+  window.QuizSpeech?.onQuestion(q,done);
 }
 function wrongView(){
   const list=questions.filter(q=>state.wrongIds.includes(q.id));
@@ -13650,5 +13663,10 @@ document.addEventListener("visibilitychange",()=>{if(document.hidden&&studySessi
 window.addEventListener("pagehide",()=>{if(studySessionStartedAt)saveStudySession()});
 init();
 </script>
+<script src="/ai-core.js"></script>
+<script src="/ai.js"></script>
+<script src="/speech-core.js"></script>
+<script src="/speech.js"></script>
+<script src="/mastery-ui.js"></script>
 </body>
 </html>

@@ -1,0 +1,7 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import '../src/mastery-core.js';
+const M=globalThis.QuizMastery,ts=s=>Date.parse(s),now=ts('2026-10-22T12:00:00+08:00'),start=ts('2026-10-23T00:00:00+08:00'),end=start+86400000;
+const q=Array.from({length:9},(_,i)=>({id:i+1})),review=dueTs=>({phase:'review',stage:0,dueTs});
+test('Beijing day boundaries are independent of device timezone; due and tomorrow are separate',()=>{const memory={1:review(start),2:review(end-1),3:review(end),4:review(now),5:review(now-86400000),6:{phase:'learning',dueTs:start},7:{phase:'mastered',dueTs:start},8:review(NaN),9:{...review(start),stage:6}};const before=JSON.stringify(memory);const f=M.forecast([...q,q[0]],memory,now);assert.deepEqual(f.tomorrowIds,[1,2]);assert.deepEqual(f.dueIds,[4,5]);assert.equal(f.tomorrowStart,start);assert.equal(JSON.stringify(memory),before);});
+test('reset, completing a cycle, empty plan and advancing midnight recalculate without invented records',()=>{const memory={1:review(start)};assert.equal(M.forecast(q,memory,now).tomorrowCount,1);memory[1].phase='learning';assert.equal(M.forecast(q,memory,now).tomorrowCount,0);memory[1]=review(start);assert.equal(M.forecast(q,memory,start).tomorrowCount,0);assert.equal(M.forecast(q,memory,start).dueCount,1);assert.equal(M.forecast(q,{},now).dueCount,0);memory[1].phase='mastered';assert.equal(M.forecast(q,memory,start).dueCount,0);});

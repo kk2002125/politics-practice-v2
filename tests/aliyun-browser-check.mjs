@@ -1,0 +1,26 @@
+import http from 'node:http';
+import assert from 'node:assert/strict';
+import {chromium} from '/opt/homebrew/lib/node_modules/@playwright/mcp/node_modules/playwright/index.mjs';
+import worker from '../worker/index.js';
+const env={ACTIVATION_CODE:'browser-test-only',SESSION_SECRET:'browser-test-session-only-0000000000000000000000000000000000000'};
+const server=http.createServer(async(req,res)=>{try{let body='';for await(const c of req)body+=c;const request=new Request('http://localhost:'+server.address().port+req.url,{method:req.method,headers:req.headers,...(body?{body}:{} )});const response=await worker.fetch(request,env);res.writeHead(response.status,Object.fromEntries(response.headers));res.end(Buffer.from(await response.arrayBuffer()));}catch(e){res.writeHead(500);res.end('test server failure');}});
+await new Promise(r=>server.listen(0,'127.0.0.1',r));
+const browser=await chromium.launch({channel:'chrome',headless:true}),page=await browser.newPage({viewport:{width:390,height:844}}),errors=[];
+page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());
+page.setDefaultTimeout(12000);
+const url='http://localhost:'+server.address().port;
+
+await page.addInitScript(()=>{window.__plays=[];window.__stops=0;window.Audio=class{constructor(url){this.src=url;}play(){window.__plays.push(this.src);return Promise.resolve();}pause(){window.__stops++;}removeAttribute(){}load(){}};});
+let requests=[];
+await page.route('**/api/speech',async route=>{const b=route.request().postDataJSON();requests.push(b);await new Promise(r=>setTimeout(r,b.text.includes('旧题')?350:20));await route.fulfill({status:200,contentType:'audio/mpeg',body:Buffer.from([73,68,51,1])}).catch(()=>{});});
+try{
+await page.goto(url);await page.locator('#code').fill(env.ACTIVATION_CODE);await page.locator('#submit').click();await page.getByRole('heading',{name:'记忆掌握情况',exact:true}).waitFor();
+const learning=await page.evaluate(()=>localStorage.getItem('politics_quiz_independent_v2_v0_1'));
+await page.getByRole('button',{name:'朗读设置',exact:true}).click();assert.equal(await page.locator('#speech-source').inputValue(),'aliyun');assert.equal(await page.locator('#speech-aliyun-voice').inputValue(),'longshuo_v3');assert.equal(await page.locator('#speech-auto').isChecked(),false);
+await page.locator('#speech-key').fill('test-private-key-only');await page.locator('#speech-key').dispatchEvent('change');await page.getByRole('button',{name:'试听',exact:true}).click();await page.waitForFunction(()=>window.__plays.length===1);assert.equal(requests.length,1);assert.equal(requests[0].voice,'longshuo_v3');await page.getByRole('button',{name:'试听',exact:true}).click();await page.waitForFunction(()=>window.__plays.length===2);assert.equal(requests.length,1,'cached audio should avoid synthesis');assert.equal(await page.evaluate(()=>localStorage.getItem('politics_aliyun_speech_key_v1')),null);await page.locator('#speech-remember').check();await page.getByRole('button',{name:'完成',exact:true}).click();assert.equal(await page.evaluate(()=>localStorage.getItem('politics_aliyun_speech_key_v1')),'test-private-key-only');assert.equal(await page.evaluate(()=>localStorage.getItem('politics_quiz_independent_v2_v0_1')),learning);
+await page.evaluate(()=>startPractice('selection',[1,2,3]));await page.getByRole('button',{name:'↻ 重读',exact:true}).click();await page.waitForFunction(()=>window.__plays.length===3);assert.equal(requests.at(-1).text,await page.evaluate(()=>QuizSpeechCore.textFor(getQ(),{range:'question'})));const answerBefore=await page.evaluate(()=>JSON.stringify(state.answers));
+await page.evaluate(()=>{QuizSpeech.readCurrent();nextQuestion();QuizSpeech.readCurrent();nextQuestion();QuizSpeech.readCurrent();});await page.waitForTimeout(500);assert.equal(await page.evaluate(()=>window.__plays.length),4,'only final question can play');assert.equal(await page.evaluate(()=>JSON.stringify(state.answers)),answerBefore);
+await page.getByRole('button',{name:'朗读设置',exact:true}).click();await page.locator('#speech-auto').check();await page.getByRole('button',{name:'完成',exact:true}).click();await page.evaluate(()=>startPractice('selection',[1,2]));await page.waitForFunction(()=>window.__plays.length===5);await page.locator('.option').first().click();assert.ok(await page.evaluate(()=>window.__stops)>0);await page.getByRole('button',{name:'朗读设置',exact:true}).click();await page.locator('#speech-auto').uncheck();await page.getByRole('button',{name:'完成',exact:true}).click();const quiet=await page.evaluate(()=>window.__plays.length);await page.evaluate(()=>nextQuestion());await page.waitForTimeout(100);assert.equal(await page.evaluate(()=>window.__plays.length),quiet);
+for(const width of [320,1280]){await page.setViewportSize({width,height:900});await page.getByRole('button',{name:'朗读设置',exact:true}).click();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'/tmp/politics-aliyun-settings-'+width+'.png',fullPage:true});await page.getByRole('button',{name:'完成',exact:true}).click();}
+assert.deepEqual(errors,[]);console.log('PASS Aliyun browser: defaults, key isolation, cache reuse, stem only, cancellation, quiet toggle, mobile/desktop settings.');
+}finally{await browser.close();server.close();}
